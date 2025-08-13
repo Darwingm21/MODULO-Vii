@@ -151,31 +151,151 @@ samba-tool user list
 smbclient -L localhost -U ${DOMAIN_ADMIN}
 host -t SRV _ldap._tcp.${DOMAIN}
 
+# ========================
+# PRACTICA 1: Compartir archivos entre Linux usando NFS
+# ========================
 
+# En Servidor Linux
+sudo dnf install -y nfs-utils
+sudo mkdir -p /OS3
+for i in $(seq 1 100); do echo "Archivo Adrian $i" | sudo tee /OS3/Adrian$i.txt; done
+sudo chown -R nobody:nobody /OS3
+sudo chmod -R 755 /OS3
+echo "/OS3 10.0.0.0/24(rw,sync,no_root_squash,no_all_squash)" | sudo tee /etc/exports
+sudo systemctl enable --now nfs-server
+sudo exportfs -a
+sudo systemctl restart nfs-server
 
+# En Cliente Linux
+sudo dnf install -y nfs-utils
+mkdir -p ~/nfs_os3
+sudo mount <IP_SERVIDOR>:/OS3 ~/nfs_os3
+ls ~/nfs_os3
+echo "<IP_SERVIDOR>:/OS3  ~/nfs_os3  nfs  defaults  0 0" | sudo tee -a /etc/fstab
 
+# ========================
+# PRACTICA 2: Fileserver compatible con Windows usando SAMBA
+# ========================
 
+# En Servidor Linux
+sudo dnf install -y samba samba-client samba-common
+sudo groupadd sambagrupo
+sudo useradd -M -G sambagrupo usuario2
+sudo smbpasswd -a usuario2
+sudo mkdir -p /srv/samba/compartida
+sudo chown -R root:sambagrupo /srv/samba/compartida
+sudo chmod -R 2770 /srv/samba/compartida
+for i in $(seq 1 100); do echo "Archivo Adrian $i" | sudo tee /srv/samba/compartida/adrian$i.txt; done
+sudo systemctl enable --now smb nmb
 
+# Editar /etc/samba/smb.conf y agregar:
+[compartida]
+   path = /srv/samba/compartida
+   valid users = @sambagrupo
+   writable = yes
+   browsable = yes
+   guest ok = no
 
+# En Windows
+# 1. Mapear unidad de red: \\<IP_SERVIDOR>\compartida
+# 2. Autenticarse con usuario2
+# 3. Editar archivo adrian99.txt y verificar cambios desde Linux
 
+# ========================
+# PRACTICA 3: Controlador de Dominio Samba4
+# ========================
 
+# Preparar sistema e instalar dependencias
+sudo hostnamectl set-hostname SO3.inet
+echo "<IP_SERVIDOR>  SO3  SO3.inet" | sudo tee -a /etc/hosts
+sudo dnf -y update
+sudo dnf -y install epel-release
+sudo dnf config-manager --set-enabled powertools
+sudo dnf install -y gcc make python3-devel gnutls-devel jansson-devel \
+libacl-devel openldap-devel pam-devel perl-Parse-Yapp perl-JSON python3-markdown python3-dnspython python3-pyasn1 \
+flex bison krb5-workstation krb5-devel dbus-devel
 
+# Descargar, compilar e instalar Samba
+mkdir -p /samba && cd /samba
+wget https://download.samba.org/pub/samba/stable/samba-4.16.2.tar.gz
+tar -zxvf samba-4.16.2.tar.gz
+cd samba-4.16.2
+./configure --prefix=/usr/local/samba --enable-debug --with-pam --with-ads --with-systemd
+make -j$(nproc)
+sudo make install
+echo 'export PATH=/usr/local/samba/bin:/usr/local/samba/sbin:$PATH' | sudo tee /etc/profile.d/samba.sh
+source /etc/profile.d/samba.sh
 
+# Provisionar dominio Samba AD
+DOMAIN="SO3.INET"
+DOMAIN_ADMIN="Administrator"
+DOMAIN_PASS="TuContraseñaAdmin"
 
+sudo samba-tool domain provision --use-rfc2307 \
+  --realm=${DOMAIN} \
+  --domain=${DOMAIN%%.*} \
+  --server-role=dc \
+  --dns-backend=SAMBA_INTERNAL \
+  --adminpass=${DOMAIN_PASS}
 
+# Configurar Kerberos
+sudo cp /usr/local/samba/private/krb5.conf /etc/krb5.conf
+kinit ${DOMAIN_ADMIN}
+klist
 
+# Configurar servicio systemd Samba
+sudo tee /etc/systemd/system/samba.service > /dev/null <<EOF
+[Unit]
+Description=Samba Active Directory Domain Controller
+After=network.target remote-fs.target nss-lookup.target
 
+[Service]
+Type=forking
+ExecStart=/usr/local/samba/sbin/samba -D
+PIDFile=/usr/local/samba/var/run/samba.pid
+ExecReload=/bin/kill -HUP \$MAINPID
 
+[Install]
+WantedBy=multi-user.target
+EOF
 
+sudo systemctl daemon-reload
+sudo systemctl enable --now samba
 
+# Configurar firewall
+sudo firewall-cmd --permanent --add-service={ldap,ldaps,kerberos,dns}
+sudo firewall-cmd --permanent --add-port={53,88,135,139,389,445,464,636,3268,3269}/tcp
+sudo firewall-cmd --permanent --add-port={53,88,123,138,389,464}/udp
+sudo firewall-cmd --reload
 
+# Configurar SELinux
+sudo setsebool -P samba_domain_controller on
+sudo setsebool -P samba_enable_home_dirs on
 
+# Configurar DNS inverso
+sudo samba-tool dns zonecreate localhost 0.168.192.in-addr.arpa
 
+# Bloquear /etc/resolv.conf
+echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
+echo "search ${DOMAIN}" | sudo tee -a /etc/resolv.conf
+sudo chattr +i /etc/resolv.conf
 
+# Crear usuario y agregar a Samba
+sudo useradd X
+echo 'X' | sudo passwd --stdin X
+sudo smbpasswd -a X
 
+# Verificaciones básicas
+sudo systemctl status samba
+samba-tool domain level show
+samba-tool drs showrepl
+samba-tool user list
+smbclient -L localhost -U ${DOMAIN_ADMIN}
+host -t SRV _ldap._tcp.${DOMAIN}
 
-
-
+# ========================
+# FIN DE PRACTICAS MÓDULO VII
+# ========================
 
 
 
